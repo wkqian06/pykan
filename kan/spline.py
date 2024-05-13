@@ -61,6 +61,25 @@ def B_batch(x, grid, k=0, extend=True, device='cpu'):
     return value
 
 
+def svdestimator(A, B):
+    # Initialize an empty tensor to store the results
+    results = torch.empty(A.shape[0], A.shape[2], B.shape[2], device=A.device, dtype=A.dtype)
+
+    # Process each item in the batch
+    for i in range(A.shape[0]):
+        # Compute the SVD of each matrix A[i]
+        U, S, Vh = torch.linalg.svd(A[i], full_matrices=False)
+
+        # Calculate the pseudo-inverse of A[i]
+        # We use a small value to avoid division by very small numbers for stability
+        S_inv = torch.diag(1.0 / S[S > 1e-5])
+        A_pinv = Vh.T[:, :S_inv.size(0)] @ S_inv @ U.T[:S_inv.size(0), :]
+
+        # Solve the least squares problem using the pseudo-inverse
+        results[i] = A_pinv @ B[i]
+
+    return results
+
 def coef2curve(x_eval, grid, coef, k, device="cpu"):
     '''
     converting B-spline coefficients to B-spline curves. Evaluate x on B-spline curves (summing up B_batch results over B-spline basis).
@@ -134,5 +153,16 @@ def curve2coef(x_eval, y_eval, grid, k, device="cpu"):
     '''
     # x_eval: (size, batch); y_eval: (size, batch); grid: (size, grid); k: scalar
     mat = B_batch(x_eval, grid, k, device=device).permute(0, 2, 1).to(y_eval.dtype)
-    coef = torch.linalg.lstsq(mat.to('cpu'), y_eval.unsqueeze(dim=2).to('cpu')).solution[:, :, 0]  # sometimes 'cuda' version may diverge
+
+    # temporary solution for cuda operation
+    if device == 'cuda':
+        # calculate the least squares solution use SVD
+        # print("The matrix is ill-conditioned. Please check the input data.")
+        coef = svdestimator(mat, y_eval.unsqueeze(dim=2)).view(mat.shape[0],-1)
+        # raise ValueError("The matrix is ill-conditioned. Please check the input data.")
+        # coef = torch.linalg.lstsq(mat.to(device), y_eval.unsqueeze(dim=2).to(device), driver = 'gels').solution[:, :, 0] # old version
+
+    else:
+        coef = torch.linalg.lstsq(mat.to('cpu'), y_eval.unsqueeze(dim=2).to('cpu'), driver = 'gelsy').solution[:, :, 0]
+
     return coef.to(device)
