@@ -62,7 +62,7 @@ class KANLayer(nn.Module):
             unlock already locked activation functions
     """
 
-    def __init__(self, in_dim=3, out_dim=2, num=5, k=3, noise_scale=0.1, scale_base=1.0, scale_sp=1.0, base_fun=torch.nn.SiLU(), grid_eps=0.02, grid_range=[-1, 1], sp_trainable=True, sb_trainable=True, device='cpu'):
+    def __init__(self, in_dim=3, out_dim=2, num=5, k=3, noise_scale=0.1, scale_base=1.0, scale_sp=1.0, base_fun=torch.nn.SiLU(), grid_eps=0.02, grid_range=[-1, 1], sp_trainable=True, sb_trainable=True, device='cpu', coef_method = 'lstsq'):
         ''''
         initialize a KANLayer
         
@@ -112,14 +112,14 @@ class KANLayer(nn.Module):
         self.in_dim = in_dim
         self.num = num
         self.k = k
-
+        self.coef_method = coef_method
         # shape: (size, num)
         self.grid = torch.einsum('i,j->ij', torch.ones(size, device=device), torch.linspace(grid_range[0], grid_range[1], steps=num + 1, device=device))
         self.grid = torch.nn.Parameter(self.grid).requires_grad_(False)
         noises = (torch.rand(size, self.grid.shape[1]) - 1 / 2) * noise_scale / num
         noises = noises.to(device)
         # shape: (size, coef)
-        self.coef = torch.nn.Parameter(curve2coef(self.grid, noises, self.grid, k, device))
+        self.coef = torch.nn.Parameter(curve2coef(self.grid, noises, self.grid, k, device, coef_method)).requires_grad_(True)
         if isinstance(scale_base, float):
             self.scale_base = torch.nn.Parameter(torch.ones(size, device=device) * scale_base).requires_grad_(sb_trainable)  # make scale trainable
         else:
@@ -215,7 +215,7 @@ class KANLayer(nn.Module):
         margin = 0.01
         grid_uniform = torch.cat([grid_adaptive[:, [0]] - margin + (grid_adaptive[:, [-1]] - grid_adaptive[:, [0]] + 2 * margin) * a for a in np.linspace(0, 1, num=self.grid.shape[1])], dim=1)
         self.grid.data = self.grid_eps * grid_uniform + (1 - self.grid_eps) * grid_adaptive
-        self.coef.data = curve2coef(x_pos, y_eval, self.grid, self.k, device=self.device)
+        self.coef.data = curve2coef(x_pos, y_eval, self.grid, self.k, device=self.device, method = self.coef_method)
 
     def initialize_grid_from_parent(self, parent, x):
         '''
@@ -250,11 +250,11 @@ class KANLayer(nn.Module):
         x_eval = torch.einsum('ij,k->ikj', x, torch.ones(self.out_dim, ).to(self.device)).reshape(batch, self.size).permute(1, 0)
         x_pos = parent.grid
         sp2 = KANLayer(in_dim=1, out_dim=self.size, k=1, num=x_pos.shape[1] - 1, scale_base=0., device=self.device)
-        sp2.coef.data = curve2coef(sp2.grid, x_pos, sp2.grid, k=1, device=self.device)
+        sp2.coef.data = curve2coef(sp2.grid, x_pos, sp2.grid, k=1, device=self.device,  method = self.coef_method)
         y_eval = coef2curve(x_eval, parent.grid, parent.coef, parent.k, device=self.device)
         percentile = torch.linspace(-1, 1, self.num + 1).to(self.device)
         self.grid.data = sp2(percentile.unsqueeze(dim=1))[0].permute(1, 0)
-        self.coef.data = curve2coef(x_eval, y_eval, self.grid, self.k, self.device)
+        self.coef.data = curve2coef(x_eval, y_eval, self.grid, self.k, self.device, method = self.coef_method)
 
     def get_subset(self, in_id, out_id):
         '''

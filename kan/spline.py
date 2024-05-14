@@ -122,7 +122,7 @@ def coef2curve(x_eval, grid, coef, k, device="cpu"):
     return y_eval
 
 
-def curve2coef(x_eval, y_eval, grid, k, device="cpu"):
+def curve2coef(x_eval, y_eval, grid, k, device="cpu", method = 'lstsq'):
     '''
     converting B-spline curves to B-spline coefficients using least squares.
     
@@ -138,7 +138,9 @@ def curve2coef(x_eval, y_eval, grid, k, device="cpu"):
             the piecewise polynomial order of splines.
         device : str
             devicde
-        
+        method: str ['lstsq', 'svd']
+            method to solve the least squares problem. Default: 'lstsq'
+
     Example
     -------
     >>> num_spline = 5
@@ -154,15 +156,12 @@ def curve2coef(x_eval, y_eval, grid, k, device="cpu"):
     # x_eval: (size, batch); y_eval: (size, batch); grid: (size, grid); k: scalar
     mat = B_batch(x_eval, grid, k, device=device).permute(0, 2, 1).to(y_eval.dtype)
 
-    # temporary solution for cuda operation
-    if device == 'cuda':
-        # calculate the least squares solution use SVD
-        # print("The matrix is ill-conditioned. Please check the input data.")
-        coef = svdestimator(mat, y_eval.unsqueeze(dim=2)).view(mat.shape[0],-1)
-        # raise ValueError("The matrix is ill-conditioned. Please check the input data.")
-        # coef = torch.linalg.lstsq(mat.to(device), y_eval.unsqueeze(dim=2).to(device), driver = 'gels').solution[:, :, 0] # old version
+    if method == 'lstsq':
+        coef = torch.linalg.lstsq(mat.to(device), y_eval.unsqueeze(dim=2).to(device), driver = 'gelsy' if device == 'cpu' else 'gels' ).solution[:, :, 0]
+        # Note: The GPU version 'gels' may lead to divergence in some cases, resulting the loss to be nan
 
-    else:
-        coef = torch.linalg.lstsq(mat.to('cpu'), y_eval.unsqueeze(dim=2).to('cpu'), driver = 'gelsy').solution[:, :, 0]
+    else: 
+        # a temporary alternative solution for cuda operation (more time consuming than lstsq)
+        coef = svdestimator(mat, y_eval.unsqueeze(dim=2)).view(mat.shape[0],-1)
 
     return coef.to(device)

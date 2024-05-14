@@ -78,7 +78,7 @@ class KAN(nn.Module):
     '''
 
     def __init__(self, width=None, grid=3, k=3, noise_scale=0.1, noise_scale_base=0.1, base_fun=torch.nn.SiLU(), symbolic_enabled=True, bias_trainable=True, grid_eps=1.0, grid_range=[-1, 1], sp_trainable=True, sb_trainable=True,
-                 device='cpu', seed=0):
+                 device='cpu', seed=0 ,  coef_method = 'lstsq'):
         '''
         initalize a KAN model
         
@@ -133,12 +133,13 @@ class KAN(nn.Module):
         self.act_fun = []
         self.depth = len(width) - 1
         self.width = width
+        self.coef_method = coef_method
 
         for l in range(self.depth):
             # splines
             scale_base = 1 / np.sqrt(width[l]) + (torch.randn(width[l] * width[l + 1], ) * 2 - 1) * noise_scale_base
             sp_batch = KANLayer(in_dim=width[l], out_dim=width[l + 1], num=grid, k=k, noise_scale=noise_scale, scale_base=scale_base, scale_sp=1., base_fun=base_fun, grid_eps=grid_eps, grid_range=grid_range, sp_trainable=sp_trainable,
-                                sb_trainable=sb_trainable, device=device)
+                                sb_trainable=sb_trainable, device=device, coef_method = coef_method)
             self.act_fun.append(sp_batch)
 
             # bias
@@ -202,7 +203,7 @@ class KAN(nn.Module):
             # spb = spb_parent
             preacts = another_model.spline_preacts[l]
             postsplines = another_model.spline_postsplines[l]
-            self.act_fun[l].coef.data = curve2coef(preacts.reshape(batch, spb.size).permute(1, 0), postsplines.reshape(batch, spb.size).permute(1, 0), spb.grid, k=spb.k, device=self.device)
+            self.act_fun[l].coef.data = curve2coef(preacts.reshape(batch, spb.size).permute(1, 0), postsplines.reshape(batch, spb.size).permute(1, 0), spb.grid, k=spb.k, device=self.device, method = self.coef_method)
             spb.scale_base.data = spb_parent.scale_base.data
             spb.scale_sp.data = spb_parent.scale_sp.data
             spb.mask.data = spb_parent.mask.data
@@ -969,9 +970,21 @@ class KAN(nn.Module):
                 in_important = torch.max(self.acts_scale[i], dim=1)[0] > threshold
                 out_important = torch.max(self.acts_scale[i + 1], dim=0)[0] > threshold
                 overall_important = in_important * out_important
+            # elif mode == 'edgefrac':
+            #     in_important = torch.max(self.acts_scale[i]/torch.sum(self.acts_scale[i], dim=0), dim=1)[0] > threshold
+            #     out_important = torch.max(self.acts_scale[i + 1]/torch.sum(self.acts_scale[i + 1], dim=1), dim=0)[0] > threshold
+            #     overall_important = in_important * out_important
             elif mode == "manual":
                 overall_important = torch.zeros(self.width[i + 1], dtype=torch.bool)
                 overall_important[active_neurons_id[i + 1]] = True
+
+            ### codes for cases that overall_important is  all False ###
+            # this oprator assumes that the mismatch between the effecitve inflow and outflow indicating a more narrow KAN setting 
+            
+            if torch.sum(overall_important) == 0:
+                # select either of in_important or out_important as the overall_important
+                overall_important = in_important if torch.sum(in_important) > torch.sum(out_important) else out_important
+
             mask.append(overall_important.float())
             active_neurons.append(torch.where(overall_important == True)[0])
         active_neurons.append(list(range(self.width[-1])))
