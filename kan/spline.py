@@ -154,15 +154,17 @@ def curve2coef(x_eval, y_eval, grid, k, device="cpu", method = 'lstsq'):
     torch.Size([5, 13])
     '''
     # x_eval: (size, batch); y_eval: (size, batch); grid: (size, grid); k: scalar
-    mat = B_batch(x_eval, grid, k, device=device).permute(0, 2, 1).to(y_eval.dtype)
+    mat = B_batch(x_eval, grid, k, device=device).permute(0, 2, 1).to(y_eval.dtype) # mat can be ill-conditioned
 
     if method == 'lstsq':
         coef = torch.linalg.lstsq(mat.to(device), y_eval.unsqueeze(dim=2).to(device), 
                                   driver = 'gelsy' if device == 'cpu' else 'gels' ).solution[:, :, 0]
-        # Note: The GPU version 'gels' may lead to divergence in some cases, resulting the loss to be nan
+        # Note: 
+        # 1. The GPU version 'gels' may lead to divergence in some cases, 
+        # 2. Ill-conditioned mat leads to nan in coef. 
 
     else: 
-        # a temporary alternative solution for cuda operation (more time consuming than lstsq)
+        # a temporary alternative solution for cuda operation (more time consuming than lstsq) to solve the ill-conditioning problem
         coef = svdestimator(mat, y_eval.unsqueeze(dim=2)).view(mat.shape[0],-1)
 
     return coef.to(device)
