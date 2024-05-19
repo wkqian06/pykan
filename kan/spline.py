@@ -158,13 +158,17 @@ def curve2coef(x_eval, y_eval, grid, k, device="cpu", method = 'lstsq'):
 
     if method == 'lstsq':
         coef = torch.linalg.lstsq(mat.to(device), y_eval.unsqueeze(dim=2).to(device), 
-                                  driver = 'gelsy' if device == 'cpu' else 'gels' ).solution[:, :, 0]
+                                  driver = 'gelsy' if device == 'cpu' else 'gels' ,rcond = 1e-7).solution[:, :, 0]
         # Note: 
         # 1. The GPU version 'gels' may lead to divergence in some cases, 
         # 2. Ill-conditioned mat leads to nan in coef. 
+        # 3. The 'rcond' parameter is used to avoid the ill-conditioned problem. test: fix the rcond
 
     else: 
-        # a temporary alternative solution for cuda operation (more time consuming than lstsq) to solve the ill-conditioning problem
+        # solution 1: a temporary alternative solution for cuda operation (more time consuming than lstsq) to solve the ill-conditioning problem
         coef = svdestimator(mat, y_eval.unsqueeze(dim=2)).view(mat.shape[0],-1)
+
+    # solution 2: convert nan to 0 in torch
+    coef = torch.nan_to_num(coef, nan=0.0, posinf=0.0, neginf=0.0)
 
     return coef.to(device)
