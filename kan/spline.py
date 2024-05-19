@@ -164,11 +164,11 @@ def curve2coef(x_eval, y_eval, grid, k, device="cpu", method = 'lstsq'):
         # 2. Ill-conditioned mat leads to nan in coef. 
         # 3. The 'rcond' parameter is used to avoid the ill-conditioned problem. test: fix the rcond
 
+        # solution 2: convert nan to 0 in torch
+        coef = torch.nan_to_num(coef, nan=0.0, posinf=0.0, neginf=0.0)
     else: 
         # solution 1: a temporary alternative solution for cuda operation (more time consuming than lstsq) to solve the ill-conditioning problem
         coef = svdestimator(mat, y_eval.unsqueeze(dim=2)).view(mat.shape[0],-1)
 
-    # solution 2: convert nan to 0 in torch
-    coef = torch.nan_to_num(coef, nan=0.0, posinf=0.0, neginf=0.0)
 
     return coef.to(device)
