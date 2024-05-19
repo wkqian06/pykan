@@ -115,7 +115,12 @@ class KANLayer(nn.Module):
         self.coef_method = coef_method
         # shape: (size, num)
         self.grid = torch.einsum('i,j->ij', torch.ones(size, device=device), torch.linspace(grid_range[0], grid_range[1], steps=num + 1, device=device))
-        self.grid = torch.nn.Parameter(self.grid).requires_grad_(False)
+        
+        # self.grid = torch.nn.Parameter(self.grid).requires_grad_(False)
+        # grid sometimes can be nan during the backbropagation, which is strange. not sure if it is becuase someting wrong with 
+        # the backbropagation in calcualating the grdients of the grid even if it is not trainable. 
+        # comment this line at least works for now.
+
         noises = (torch.rand(size, self.grid.shape[1]) - 1 / 2) * noise_scale / num
         noises = noises.to(device)
         # shape: (size, coef)
