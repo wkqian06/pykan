@@ -275,7 +275,7 @@ class KAN(nn.Module):
         for l in range(self.depth):
             self.act_fun[l].initialize_grid_from_parent(model.act_fun[l], model.acts[l])
 
-    def forward(self, x):
+    def forward(self, x,dim_mask = None):
         '''
         KAN forward
         
@@ -296,6 +296,10 @@ class KAN(nn.Module):
         >>> model(x).shape
         torch.Size([100, 3])
         '''
+        if dim_mask is not None:
+            mask = torch.ones(x.shape[1], dtype=torch.bool)  # Initialize a tensor of False values
+            mask[dim_mask] = False  # Set the elements at the specified indices to True
+            x= x[:,mask]
 
         self.acts = []  # shape ([batch, n0], [batch, n1], ..., [batch, n_L])
         self.spline_preacts = []
@@ -330,7 +334,14 @@ class KAN(nn.Module):
             self.spline_postacts.append(postacts.detach())
             self.spline_postsplines.append(postspline.detach())
 
+            #### bias could also to 0 #### 
+            # solution 1:
+            if torch.isnan(self.biases[l].weight).any() == True:
+                self.biases[l].weight.data = torch.nan_to_num(self.biases[l].weight.data, nan=0.0, posinf=0.0, neginf=0.0)
+ 
+            # solution 2: set bias_trainable = False
             x = x + self.biases[l].weight
+            
             self.acts.append(x)
 
         return x
@@ -759,8 +770,8 @@ class KAN(nn.Module):
         if title != None:
             plt.gcf().get_axes()[0].text(0.5, y0 * (len(self.width) - 1) + 0.2, title, fontsize=40 * scale, horizontalalignment='center', verticalalignment='center')
 
-    def train(self, dataset, opt="LBFGS", steps=100, log=1, lamb=0., lamb_l1=1., lamb_entropy=2., lamb_coef=0., lamb_coefdiff=0., update_grid=True, grid_update_num=10, loss_fn=None, lr=1., stop_grid_update_step=50, batch=-1,
-              small_mag_threshold=1e-16, small_reg_factor=1., metrics=None, sglr_avoid=False, save_fig=False, in_vars=None, out_vars=None, beta=3, save_fig_freq=1, img_folder='./video', device='cpu'):
+    def train(self, dataset, dim_mask = None, opt="LBFGS", steps=100, log=1, lamb=0., lamb_l1=1., lamb_entropy=2., lamb_coef=0., lamb_coefdiff=0., update_grid=True, grid_update_num=10, loss_fn=None, lr=1., stop_grid_update_step=50, batch=-1,
+              small_mag_threshold=1e-16, small_reg_factor=1., metrics=None, sglr_avoid=False, save_fig=False, in_vars=None, out_vars=None, beta=3, save_fig_freq=1, img_folder='./video',device=None):
         '''
         training
 
@@ -818,6 +829,12 @@ class KAN(nn.Module):
         >>> model.train(dataset, opt='LBFGS', steps=50, lamb=0.01);
         >>> model.plot()
         '''
+        device = self.device if device is None else device
+        if dim_mask is not None:
+            mask = torch.ones(dataset['train_input'].shape[1], dtype=torch.bool)  # Initialize a tensor of False values
+            mask[dim_mask] = False  # Set the elements at the specified indices to True
+            dataset['train_input'] = dataset['train_input'][:,mask]
+            dataset['test_input'] = dataset['test_input'][:,mask]
 
         def reg(acts_scale):
 
@@ -874,7 +891,6 @@ class KAN(nn.Module):
 
         def closure():
             global train_loss, reg_
-            optimizer.zero_grad()
             pred = self.forward(dataset['train_input'][train_id].to(device))
             if sglr_avoid == True:
                 id_ = torch.where(torch.isnan(torch.sum(pred, dim=1)) == False)[0]
@@ -882,9 +898,10 @@ class KAN(nn.Module):
             else:
                 train_loss = loss_fn(pred, dataset['train_label'][train_id].to(device))
             reg_ = reg(self.acts_scale)
-            objective = train_loss + lamb * reg_
-            objective.backward()
-            return objective
+            loss = train_loss + lamb * reg_
+            optimizer.zero_grad()
+            loss.backward()
+            return loss
 
         if save_fig:
             if not os.path.exists(img_folder):
@@ -963,33 +980,50 @@ class KAN(nn.Module):
         >>> model.prune()
         >>> model.plot(mask=True)
         '''
-        mask = [torch.ones(self.width[0], )]
-        active_neurons = [list(range(self.width[0]))]
-        for i in range(len(self.acts_scale) - 1):
-            if mode == "auto":
-                in_important = torch.max(self.acts_scale[i], dim=1)[0] > threshold
-                out_important = torch.max(self.acts_scale[i + 1], dim=0)[0] > threshold
-                overall_important = in_important * out_important
-            # elif mode == 'edgefrac':
-            #     in_important = torch.max(self.acts_scale[i]/torch.sum(self.acts_scale[i], dim=0), dim=1)[0] > threshold
-            #     out_important = torch.max(self.acts_scale[i + 1]/torch.sum(self.acts_scale[i + 1], dim=1), dim=0)[0] > threshold
-            #     overall_important = in_important * out_important
-            elif mode == "manual":
-                overall_important = torch.zeros(self.width[i + 1], dtype=torch.bool)
-                overall_important[active_neurons_id[i + 1]] = True
 
-            ### codes for cases that overall_important is  all False ###
-            # this oprator assumes that the mismatch between the effecitve inflow and outflow indicating a more narrow KAN setting 
-            
-            if torch.sum(overall_important) == 0:
-                # select either of in_important or out_important as the overall_important
-                overall_important = in_important if torch.sum(in_important) > torch.sum(out_important) else out_important
+        if mode == 'outfrac':
+            out_frac_idx = torch.tensor(range(self.width[-1]),device = self.device)
+            mask = list(range(len(self.width)-1))
+            mask[0] = torch.ones(self.width[0])
+            active_neurons = list(range(len(self.width)-1))
+            active_neurons[0] = list(range(self.width[0]))
 
-            mask.append(overall_important.float())
-            active_neurons.append(torch.where(overall_important == True)[0])
+            for i in range(len(self.acts_scale) - 1, -1, -1):
+                
+                out_frac = (self.acts_scale[i]/torch.sum(self.acts_scale[i ],dim= 1)[:,None]) > threshold
+                out_frac = out_frac[out_frac_idx]
+                overall_important = torch.any(out_frac, dim=0)
+
+                # 2d index of out_frac where the value is True
+                out_frac_idx = torch.where(overall_important)
+                mask[i] = overall_important.float()
+                active_neurons[i] = torch.where(overall_important == True)[0]
+        else:
+            mask = [torch.ones(self.width[0], )]
+            active_neurons = [list(range(self.width[0]))]
+
+            for i in range(len(self.acts_scale) - 1):
+                if mode == "auto":
+                    in_important = torch.max(self.acts_scale[i], dim=1)[0] > threshold
+                    out_important = torch.max(self.acts_scale[i + 1], dim=0)[0] > threshold
+                    overall_important = in_important * out_important
+
+                elif mode == "manual":
+                    overall_important = torch.zeros(self.width[i + 1], dtype=torch.bool)
+                    overall_important[active_neurons_id[i + 1]] = True
+
+                ### codes for cases that overall_important is  all False ###
+                # this oprator assumes that the mismatch between the effecitve inflow and outflow indicating a more narrow KAN setting 
+                if torch.sum(overall_important) == 0:
+                    # select either of in_important or out_important as the overall_important
+                    overall_important = in_important if torch.sum(in_important) > torch.sum(out_important) else out_important
+
+                mask.append(overall_important.float())
+                active_neurons.append(torch.where(overall_important == True)[0])
         active_neurons.append(list(range(self.width[-1])))
         mask.append(torch.ones(self.width[-1], ))
 
+        self.active_neurons = active_neurons
         self.mask = mask  # this is neuron mask for the whole model
 
         # update act_fun[l].mask
@@ -1048,6 +1082,27 @@ class KAN(nn.Module):
         self.act_fun[l].mask[torch.arange(self.width[l + 1]) * self.width[l] + i] = 0.
         self.symbolic_fun[l - 1].mask[i, :] *= 0.
         self.symbolic_fun[l].mask[:, i] *= 0.
+    
+    def prune_reset(self):
+        '''
+        reset the mask of the model to all nodes and edges
+        
+        Args:
+        -----
+            None
+        
+        Returns:
+        --------
+            None
+        '''
+        # rest act_fun[l].mask
+        for l in range(len(self.acts_scale) - 1):
+            for i in range(self.width[l + 1]):
+                if i not in self.active_neurons[l + 1]:
+                        self.act_fun[l ].mask[i * self.width[l] + torch.arange(self.width[l ])] = 1.
+                        self.act_fun[l+1].mask[torch.arange(self.width[l + 2]) * self.width[l+1] + i] = 1.
+                        self.symbolic_fun[l ].mask[i, :] = 0.
+                        self.symbolic_fun[l+1].mask[:, i] = 0.
 
     def suggest_symbolic(self, l, i, j, a_range=(-10, 10), b_range=(-10, 10), lib=None, topk=5, verbose=True):
         '''suggest the symbolic candidates of phi(l,i,j)
