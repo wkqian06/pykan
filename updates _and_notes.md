@@ -4,7 +4,7 @@
     
 - batch in KAN.train 
 
-- SVD method is add to calculate the coef. 
+- SVD method is added to calculate the coef. 
 
 - nan in loss can be caused by nan in KAN.grid during backpropogation and KANLayer.coef during calculating due to the ill-conditioned matrix of mat during the initialization. 
 
